@@ -7465,12 +7465,16 @@ no payload at all."
             (pilish-terminal-image-mode 1)
             (should (timerp pilish-terminal-image--timer))
             (should (memq #'pilish-terminal-image--prune post-command-hook))
+            (should (advice-member-p #'pilish-terminal-image--with-menu 'x-popup-menu))
+            (should (advice-member-p #'pilish-terminal-image--with-menu 'x-popup-dialog))
             (setq pilish-terminal-image--placements '((:id 123)))
             (pilish-terminal-image-mode -1)
             (should-not pilish-terminal-image--timer)
             (should-not pilish-terminal-image--placements)
             (should (equal deleted '((:id 123))))
-            (should-not (memq #'pilish-terminal-image--prune post-command-hook)))
+            (should-not (memq #'pilish-terminal-image--prune post-command-hook))
+            (should-not (advice-member-p #'pilish-terminal-image--with-menu 'x-popup-menu))
+            (should-not (advice-member-p #'pilish-terminal-image--with-menu 'x-popup-dialog)))
         (pilish-terminal-image-mode -1)))))
 
 (ert-deftest pilish-test-terminal-image-unrelated-commands-do-not-redraw ()
@@ -7533,6 +7537,136 @@ no payload at all."
       (should-error (pilish-terminal-image--draw view))
       (should (integerp (plist-get deleted :id)))
       (should (equal view (plist-get deleted :view))))))
+
+(ert-deftest pilish-test-terminal-image-native-menu-suspends-only-its-frame ()
+  "Native menu entry suppresses images through refresh, nesting and unwind."
+  (save-window-excursion
+    (with-temp-buffer
+      (switch-to-buffer (current-buffer))
+      (pilish-chat-mode)
+      (let* ((pilish-terminal-image-mode nil)
+             (pilish-terminal-image--timer nil)
+             (pilish-terminal-image--placements nil)
+             (other-frame 'other-terminal)
+             (other-view (list other-frame 'other-window 1 'other-image '(0 0 2 1)))
+             (other-placement (list :frame other-frame :id 3 :view other-view))
+             (outcome 'return)
+             (depth 0)
+             observed deleted
+             (fake-menu
+              (lambda (&rest _)
+                (push (list :remaining (mapcar (lambda (p) (plist-get p :frame))
+                                               pilish-terminal-image--placements)) observed)
+                (pilish-terminal-image--refresh)
+                (push (list :remaining (mapcar (lambda (p) (plist-get p :frame))
+                                               pilish-terminal-image--placements)) observed)
+                (when (and (eq outcome 'nested) (zerop depth))
+                  (cl-incf depth)
+                  (unwind-protect (x-popup-menu t nil) (cl-decf depth))
+                  (pilish-terminal-image--refresh)
+                  (push (list :remaining (mapcar (lambda (p) (plist-get p :frame))
+                                                 pilish-terminal-image--placements)) observed))
+                (pcase outcome
+                  ('quit (signal 'quit nil))
+                  ('error (error "Menu failed"))
+                  (_ 'picked)))))
+        (cl-letf (((symbol-function 'pilish-terminal-image--frame-p) (lambda (_) t))
+                  ((symbol-function 'pilish-terminal-image--geometry)
+                   (lambda (&rest _) '(0 0 2 1)))
+                  ((symbol-function 'pilish-terminal-image--send) #'ignore)
+                  ((symbol-function 'pilish-terminal-image--delete)
+                   (lambda (p) (push p deleted))))
+          (let ((inhibit-read-only t))
+            (insert (pilish-terminal-image--preview-string
+                     (base64-decode-string pilish-test--png-base64) "Image" (selected-window))))
+          ;; Install below the production around-advice so the real public native
+          ;; entry point is exercised without requiring an interactive menu reader.
+          (advice-add 'x-popup-menu :override fake-menu '((depth . 100)))
+          (unwind-protect
+              (progn
+                (pilish-terminal-image-mode 1)
+                (dolist (scenario '(return quit error nested))
+                  (setq outcome scenario observed nil)
+                  (pilish-terminal-image--refresh)
+                  (should (= 1 (length pilish-terminal-image--placements)))
+                  ;; A different terminal must not be cleared for this menu.
+                  (push other-placement pilish-terminal-image--placements)
+                  (cl-letf (((symbol-function 'pilish-terminal-image--retain-views)
+                             (let ((original (symbol-function 'pilish-terminal-image--retain-views)))
+                               (lambda (views) (funcall original (cons other-view views))))))
+                    (pcase scenario
+                      ('quit (should (eq 'cancelled
+                                         (condition-case nil (x-popup-menu t nil)
+                                           (quit 'cancelled)))))
+                      ('error (should-error (x-popup-menu t nil)))
+                      (_ (should (eq 'picked (x-popup-menu t nil)))))
+                    (should observed)
+                    (dolist (state observed)
+                      (should (equal (plist-get state :remaining) (list other-frame))))
+                    (pilish-terminal-image--refresh)
+                    (should (= 2 (length pilish-terminal-image--placements))))
+                  (setq pilish-terminal-image--placements
+                        (cl-remove other-placement pilish-terminal-image--placements)))
+                (should-not (memq other-placement deleted)))
+            (pilish-terminal-image-mode -1)
+            (advice-remove 'x-popup-menu fake-menu)))))))
+
+(ert-deftest pilish-test-terminal-image-menu-cache-and-gui-do-not-suspend ()
+  "Menu precalculation and native GUI menus must not disturb tty placements."
+  (dolist (scenario '(cache gui))
+    (let* ((placement (list :frame (selected-frame) :id 1))
+           (pilish-terminal-image--placements (list placement))
+           (pilish-terminal-image--menu-frames nil)
+           called)
+      (cl-letf (((symbol-function 'pilish-terminal-image--frame-p)
+                 (lambda (_) (eq scenario 'cache)))
+                ((symbol-function 'pilish-terminal-image--prune)
+                 (lambda (&rest _) (ert-fail "This path must not suppress images"))))
+        (should (eq 'picked
+                    (pilish-terminal-image--with-menu
+                     (lambda (&rest _) (setq called t) 'picked)
+                     (and (eq scenario 'gui) t) nil)))
+        (should called)
+        (should (equal (list placement) pilish-terminal-image--placements))
+        (should-not pilish-terminal-image--menu-frames)))))
+
+(ert-deftest pilish-test-terminal-image-overlay-popup-obscures-reserved-cells ()
+  "Display substitutions and popup strings inside reserved rows hide previews."
+  (save-window-excursion
+    (with-temp-buffer
+      (switch-to-buffer (current-buffer))
+      (insert "                    \n                    \n")
+      (let ((preview (pilish-terminal-image--make-preview :columns 10 :rows 2))
+            (window (selected-window)))
+        (set-window-start window 1)
+        (cl-letf (((symbol-function 'pos-visible-in-window-p)
+                   (lambda (position &rest _)
+                     (save-excursion
+                       (goto-char position)
+                       (list (current-column) (1- (line-number-at-pos)))))))
+          (dolist (property '(display before-string after-string))
+            (let ((popup (make-overlay 5 6)))
+              (unwind-protect
+                  (progn
+                    (overlay-put popup 'face 'highlight)
+                    (should (pilish-terminal-image--geometry window 1 preview))
+                    (overlay-put popup property "Menu item")
+                    (should-not (pilish-terminal-image--geometry window 1 preview)))
+                (delete-overlay popup))))
+          (let ((popup (make-overlay 1 (point-max))))
+            (unwind-protect
+                (progn
+                  ;; A footer outside the image does not obscure reserved cells.
+                  (overlay-put popup 'after-string "Footer")
+                  (should (pilish-terminal-image--geometry window 1 preview))
+                  (overlay-put popup 'display "Popup in another window")
+                  (overlay-put popup 'window 'another-window)
+                  (should (pilish-terminal-image--geometry window 1 preview)))
+              (delete-overlay popup)))
+          (put-text-property 5 6 'display "Menu item")
+          (should-not (pilish-terminal-image--geometry window 1 preview))
+          (remove-text-properties 5 6 '(display nil))
+          (should (pilish-terminal-image--geometry window 1 preview)))))))
 
 (ert-deftest pilish-test-terminal-image-geometry-requires-whole-region ()
   "A partial, folded, too-wide or horizontally scrolled region never qualifies."

@@ -1148,7 +1148,11 @@ preview-byte cap also applies to converted PNG output.
 Previews reserve text cells. Every preview whose complete region fits in
 its window is displayed; partially visible previews are hidden rather than
 clipped. Workspace switches, scrolling, resizing, folding, and closing
-windows remove or reposition placements. Disable the mode with
+windows remove or reposition placements. Native terminal menus and popup
+dialogs temporarily hide previews in their frame, including while a menu waits
+for input; previews return after it closes. Text-replacing popup overlays that
+intersect a preview's reserved cells hide that preview until removed. Face-only
+overlays do not hide images. Disable the mode with
 =M-x pilish-terminal-image-mode= to remove all owned terminal images.
 Existing placeholders need a tool-block toggle or history reload after
 enabling; reserved blank rows can remain after disabling until re-rendered.

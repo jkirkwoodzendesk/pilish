@@ -12,6 +12,8 @@ An explicitly enabled terminal client displays PNG previews directly, and JPEG, 
 - `lifecycle`: scrolling, resizing, workspace switches, window closure, and buffer teardown remove or reposition previews.
 - `multiple`: multiple completely visible previews can coexist.
 - `stable`: unrelated commands and edits leave unchanged placements intact.
+- `menus`: native menus/dialogs suppress previews only on their terminal frame, even during timer callbacks and nested menus; closing, cancelling or erroring restores previews on refresh. Menu precalculation and GUI menus do not suppress tty previews.
+- `overlays`: display substitutions or popup strings inside reserved image cells hide that preview; face-only and other-window overlays do not.
 - `fallback`: unsupported, invalid, oversized, unavailable-converter and failed-conversion images keep existing placeholders.
 
 ## How to get to it (user POV)
@@ -55,7 +57,8 @@ For the manual terminal lane, record these user actions and observations in the 
 5. Type or move point in another visible buffer; verify unchanged previews do not flash. Then switch Doom workspace or buffer; verify images do not remain on unrelated text. Return and verify restoration.
 6. Resize, fold/unfold the result, and reload history; verify placements track the new visible regions.
 7. Attach a PNG and a JPEG, WebP or GIF to prompts; verify their sent turns and replayed history.
-8. Disable the mode, close the preview window, and kill the disposable transcript in separate runs; verify each action leaves no stale terminal images.
+8. Open a native terminal popup over a preview (for example a menu-bar menu with F10), wait for several refresh intervals, then choose an item or cancel. Verify menu text is unobscured throughout and previews return after closing. Open a nested submenu as well. Test a completion popup intersecting reserved cells; it must hide the affected preview without hiding unrelated previews or causing unrelated-command flashes.
+9. Disable the mode, close the preview window, and kill the disposable transcript in separate runs; verify each action leaves no stale terminal images.
 
 Run `make check` before committing. Preserve exact commands, outputs, and manual observations, including unrun steps and missing prerequisites.
 
@@ -65,5 +68,6 @@ Run `make check` before committing. Preserve exact commands, outputs, and manual
 - FFmpeg is optional and must be on Emacs's `exec-path` or configured explicitly. Conversion is synchronous with a default two-second deadline per image; the timeout can accumulate across multiple images.
 - Existing placeholder strings need regeneration after enabling. Disabling removes graphics but can leave reserved blank rows until regeneration.
 - Layout uses a configurable approximate cell aspect ratio, not a terminal pixel query. Narrow windows can hide previews instead of resizing them.
+- Native tty menus are not normal Emacs windows, and `menu-or-popup-active-p` can be nil while one is visible. Native entry-point scoping, not that predicate, keeps timer refreshes suppressed throughout the menu.
 - Timer-based placement can briefly hide moved or newly visible previews. Unchanged previews must survive unrelated commands and edits. Do not claim terminal pixels or performance from batch tests.
 - A failed or unavailable Doctor blocks the standard GUI journey; report it rather than substituting a terminal result for a GUI pass.

@@ -80,6 +80,9 @@ Used to preserve PNG proportions without terminal pixel-size queries."
 A view contains a window, buffer position, preview, and screen rectangle.")
 (defvar pilish-terminal-image--next-id 1700000000)
 (defvar pilish-terminal-image--last-error nil)
+(defvar pilish-terminal-image--menu-frames nil
+  "Frames temporarily obscured by native menus or popup dialogs.
+Dynamically bound during menu display so timers cannot redraw beneath it.")
 
 (defun pilish-terminal-image--frame-p (frame)
   "Return non-nil when opted-in FRAME is a live terminal client.
@@ -240,6 +243,48 @@ refresh timer so terminal graphics do not interfere with Emacs redisplay."
        (setq pilish-terminal-image--last-error (error-message-string err))
        (pilish-terminal-image--invalidate)))))
 
+(defun pilish-terminal-image--with-menu (function &rest arguments)
+  "Call native menu FUNCTION with ARGUMENTS while suppressing its previews.
+Only the affected terminal frame is hidden, including during nested menus.
+Nil positions only precalculate menus and must not disturb existing images."
+  (let* ((position (car arguments))
+         (target (cond
+                  ((and (consp position) (consp (car position)))
+                   (cadr position))
+                  ((consp position)
+                   (ignore-errors (posn-window (event-start position))))))
+         (frame (cond ((windowp target) (window-frame target))
+                      ((framep target) target)
+                      (t (selected-frame)))))
+    (if (not (and position (pilish-terminal-image--frame-p frame)))
+        (apply function arguments)
+      (let ((pilish-terminal-image--menu-frames
+             (cons frame pilish-terminal-image--menu-frames)))
+        (pilish-terminal-image--prune)
+        ;; The dynamic binding unwinds on normal return, error or cancellation.
+        ;; Wait for the usual refresh timer after Emacs restores the menu cells.
+        (apply function arguments)))))
+
+(defun pilish-terminal-image--obscured-p (start end window)
+  "Return non-nil if display substitutions obscure START through END in WINDOW.
+Face-only overlays do not obscure cells.  Popup strings count only when their
+attachment point is in the reserved cells, not elsewhere on a large overlay."
+  (or (text-property-not-all start end 'display nil)
+      (cl-some
+       (lambda (overlay)
+         (and (or (not (overlay-get overlay 'window))
+                  (eq window (overlay-get overlay 'window)))
+              (or (overlay-get overlay 'display)
+                  (cl-some
+                   (lambda (property)
+                     (let ((value (overlay-get overlay property))
+                           (anchor (if (eq property 'before-string)
+                                       (overlay-start overlay) (overlay-end overlay))))
+                       (and (stringp value) (not (string-empty-p value))
+                            (<= start anchor) (< anchor end))))
+                   '(before-string after-string)))))
+       (overlays-in start end))))
+
 (defun pilish-terminal-image--geometry (window position preview)
   "Return PREVIEW's screen rectangle at POSITION in WINDOW, or nil.
 Only complete, unwrapped, unobscured reserved rows qualify."
@@ -271,7 +316,8 @@ Only complete, unwrapped, unobscured reserved rows qualify."
                               (+ (nth 1 visible) (* index cell-height)))
                            (= (nth 1 last) (nth 1 start))
                            (not (invisible-p (point)))
-                           (not (get-char-property (point) 'display))
+                           (not (pilish-terminal-image--obscured-p
+                                 (point) (+ (point) columns) window))
                            (<= columns (window-body-width window)))
                 (setq valid nil)))
             (when (< index (1- rows))
@@ -289,6 +335,7 @@ Only complete, unwrapped, unobscured reserved rows qualify."
     (dolist (frame (frame-list))
       ;; One active screen per terminal, even when Emacs has multiple tty frames.
       (when (and (pilish-terminal-image--frame-p frame)
+                 (not (memq frame pilish-terminal-image--menu-frames))
                  (eq t (frame-visible-p frame))
                  (not (memq (frame-terminal frame) terminals)))
         (push (frame-terminal frame) terminals)
@@ -382,6 +429,10 @@ Disable the mode to remove all its terminal placements."
     (if pilish-terminal-image-mode
         (add-hook hook #'pilish-terminal-image--invalidate)
       (remove-hook hook #'pilish-terminal-image--invalidate)))
+  (dolist (function '(x-popup-menu x-popup-dialog))
+    (if pilish-terminal-image-mode
+        (advice-add function :around #'pilish-terminal-image--with-menu)
+      (advice-remove function #'pilish-terminal-image--with-menu)))
   (when pilish-terminal-image-mode
     (setq pilish-terminal-image--timer
           (run-at-time 0.15 0.15 #'pilish-terminal-image--refresh))))
