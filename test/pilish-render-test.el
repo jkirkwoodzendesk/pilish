@@ -7211,6 +7211,382 @@ no payload at all."
   "iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAD0In+KAAAADklEQVR4nGP4z8DwHwQBEPgD/U6VwW8AAAAASUVORK5CYII="
   "Base64 for a two-by-one PNG used by image preview tests.")
 
+(defconst pilish-test--jpeg-base64
+  "/9j//gAQTGF2YzYyLjExLjEwMAD/2wBDAAgEBAQEBAUFBQUFBQYGBgYGBgYGBgYGBgYHBwcICAgHBwcGBgcHCAgICAkJCQgICAgJCQoKCgwMCwsODg4RERT/xABXAAEBAAAAAAAAAAAAAAAAAAAAAQEBAQEAAAAAAAAAAAAAAAAAAAUGEAEAAwEAAAAAAAAAAAAAAAABAAJxMhEAAQUBAAAAAAAAAAAAAAAABQQCALM1dP/AABEIAAIAAgMBEgACEgADEgD/2gAMAwEAAhEDEQA/AJbp1i3TrL4XHHcaWlsBccdxpaWzLHt0r3q73we3SvervfP/2Q=="
+  "Base64 for a two-by-two JPEG used by image preview tests.")
+
+(defconst pilish-test--webp-base64
+  "UklGRioAAABXRUJQVlA4IB4AAABwAQCdASoCAAIAAgA0JZQCdAFAAAD+rKbMaRBAAAA="
+  "Base64 for a two-by-two WebP used by image preview tests.")
+
+(defconst pilish-test--gif-base64
+  "R0lGODlhAQABAIAAAP8AAAAAACH5BAAAAAAALAAAAAABAAEAAAICRAEAOw=="
+  "Base64 for a one-by-one GIF used by image preview tests.")
+
+;;; Opt-in terminal image previews
+
+(defun pilish-test--terminal-image-anchor (text)
+  "Return the terminal preview anchor index in TEXT, or nil."
+  (text-property-not-all 0 (length text) 'pilish-terminal-image nil text))
+
+(ert-deftest pilish-test-terminal-image-default-is-placeholder ()
+  "The shared renderer emits no terminal payload unless explicitly enabled."
+  (let ((pilish-terminal-image-mode nil))
+    (cl-letf (((symbol-function 'display-images-p) (lambda (&rest _) nil)))
+      (let ((text (pilish--render-content-image-preview
+                   `(:mimeType "image/png" :data ,pilish-test--png-base64))))
+        (should (string-match-p "Image: image/png" text))
+        (should-not (pilish-test--terminal-image-anchor text))))))
+
+(ert-deftest pilish-test-terminal-image-png-shared-renderer ()
+  "An opted-in PNG reserves cells and retains its validated inline bytes."
+  (with-temp-buffer
+    (let ((pilish-terminal-image-mode t))
+      (cl-letf (((symbol-function 'display-images-p) (lambda (&rest _) nil))
+                ((symbol-function 'pilish-terminal-image--frame-p) (lambda (_) t)))
+        (let* ((text (pilish--render-content-image-preview
+                      `(:mimeType "image/png" :data ,pilish-test--png-base64)))
+               (anchor (pilish-test--terminal-image-anchor text)))
+          (should anchor)
+          (let ((preview (get-text-property anchor 'pilish-terminal-image text)))
+            (should (equal pilish-test--png-base64
+                           (pilish-terminal-image--preview-data preview)))
+            (should (> (pilish-terminal-image--preview-rows preview) 0))
+            (should (<= (pilish-terminal-image--preview-columns preview)
+                        pilish-terminal-image-max-columns)))
+          (should (get-text-property anchor 'pilish-image-preview text))
+          (should-not (get-text-property anchor 'display text)))))))
+
+(ert-deftest pilish-test-terminal-image-native-gui-precedes-terminal ()
+  "Enabling terminal images does not replace native GUI image rendering."
+  (let ((pilish-terminal-image-mode t))
+    (cl-letf (((symbol-function 'display-images-p) (lambda (&rest _) t))
+              ((symbol-function 'image-type-available-p) (lambda (_) t))
+              ((symbol-function 'create-image)
+               (lambda (_raw type &rest _) (list 'image :type type)))
+              ((symbol-function 'pilish-terminal-image--convert-to-png)
+               (lambda (&rest _) (ert-fail "GUI images must not use the converter"))))
+      (dolist (fixture `((png "image/png" ,pilish-test--png-base64)
+                         (jpeg "image/jpeg" ,pilish-test--jpeg-base64)
+                         (webp "image/webp" ,pilish-test--webp-base64)
+                         (gif "image/gif" ,pilish-test--gif-base64)))
+        (let ((text (pilish--render-content-image-preview
+                     (list :mimeType (nth 1 fixture) :data (nth 2 fixture)))))
+          (should (equal (list 'image :type (car fixture))
+                         (get-text-property 0 'display text)))
+          (should-not (pilish-test--terminal-image-anchor text)))))))
+
+(ert-deftest pilish-test-terminal-image-invalid-and-overlimit-stay-placeholder ()
+  "Opt-in never bypasses shared PNG validation or source-byte limits."
+  (let ((pilish-terminal-image-mode t))
+    (cl-letf (((symbol-function 'display-images-p) (lambda (&rest _) nil))
+              ((symbol-function 'pilish-terminal-image--frame-p) (lambda (_) t)))
+      (dolist (block `((:mimeType "image/png" :data "not valid base64")
+                       (:mimeType "image/png" :data "eHl6")
+                       (:mimeType "image/jpeg" :data ,pilish-test--png-base64)))
+        (should-not (pilish-test--terminal-image-anchor
+                     (pilish--render-content-image-preview block))))
+      (let ((pilish-image-preview-max-bytes 1))
+        (should-not (pilish-test--terminal-image-anchor
+                     (pilish--render-content-image-preview
+                      `(:mimeType "image/png" :data ,pilish-test--png-base64))))))))
+
+(ert-deftest pilish-test-terminal-image-other-formats-use-validated-bytes ()
+  "JPEG, WebP and GIF use bounded conversion at the shared renderer seam."
+  (with-temp-buffer
+    (let ((pilish-terminal-image-mode t))
+      (dolist (fixture `((jpeg "image/jpeg" ,pilish-test--jpeg-base64)
+                         (webp "image/webp" ,pilish-test--webp-base64)
+                         (gif "image/gif" ,pilish-test--gif-base64)))
+        (let ((calls 0))
+          (cl-letf (((symbol-function 'display-images-p) (lambda (&rest _) nil))
+                    ((symbol-function 'pilish-terminal-image--frame-p) (lambda (_) t))
+                    ((symbol-function 'pilish-terminal-image--convert-to-png)
+                     (lambda (raw type limit)
+                       (cl-incf calls)
+                       (should (equal raw (base64-decode-string (nth 2 fixture))))
+                       (should (eq type (car fixture)))
+                       (should (= limit (pilish--image-preview-byte-limit)))
+                       (base64-decode-string pilish-test--png-base64))))
+            (let* ((text (pilish--render-content-image-preview
+                          (list :mimeType (nth 1 fixture) :data (nth 2 fixture))))
+                   (anchor (pilish-test--terminal-image-anchor text)))
+              (should anchor)
+              (should (= calls 1))
+              (should (string-match-p (nth 1 fixture) text))
+              (should (equal pilish-test--png-base64
+                             (pilish-terminal-image--preview-data
+                              (get-text-property anchor 'pilish-terminal-image text)))))))))))
+
+(ert-deftest pilish-test-terminal-image-conversion-failure-keeps-placeholder ()
+  "Unavailable conversion preserves each original image's placeholder."
+  (let ((pilish-terminal-image-mode t))
+    (cl-letf (((symbol-function 'display-images-p) (lambda (&rest _) nil))
+              ((symbol-function 'pilish-terminal-image--frame-p) (lambda (_) t))
+              ((symbol-function 'pilish-terminal-image--convert-to-png)
+               (lambda (&rest _) nil)))
+      (dolist (fixture `(("image/jpeg" ,pilish-test--jpeg-base64)
+                         ("image/webp" ,pilish-test--webp-base64)
+                         ("image/gif" ,pilish-test--gif-base64)))
+        (let ((text (pilish--render-content-image-preview
+                     (list :mimeType (car fixture) :data (cadr fixture)))))
+          (should (string-match-p (car fixture) text))
+          (should-not (pilish-test--terminal-image-anchor text)))))))
+
+(ert-deftest pilish-test-terminal-image-png-never-starts-converter ()
+  "PNG remains a direct path even when other format conversion is disabled."
+  (let ((pilish-terminal-image-mode t))
+    (cl-letf (((symbol-function 'display-images-p) (lambda (&rest _) nil))
+              ((symbol-function 'pilish-terminal-image--frame-p) (lambda (_) t))
+              ((symbol-function 'pilish-terminal-image--convert-to-png)
+               (lambda (&rest _) (ert-fail "PNG conversion is unnecessary"))))
+      (should (pilish-test--terminal-image-anchor
+               (pilish--render-content-image-preview
+                `(:mimeType "image/png" :data ,pilish-test--png-base64)))))))
+
+(ert-deftest pilish-test-terminal-image-converter-unavailable-or-unsupported ()
+  "A missing converter, disabled conversion or SVG requires no subprocess."
+  (let ((pilish-terminal-image-converter-program nil))
+    (should-not (pilish-terminal-image--convert-to-png "bytes" 'jpeg 1000)))
+  (let ((pilish-terminal-image-converter-program "pilish-no-such-converter"))
+    (should-not (pilish-terminal-image--convert-to-png "bytes" 'webp 1000)))
+  (should-not (pilish-terminal-image--convert-to-png "<svg/>" 'svg 1000)))
+
+(ert-deftest pilish-test-terminal-image-converter-timeout-output-and-cleanup ()
+  "Conversion bounds runtime and bytes and always removes its private source."
+  (let ((emacs (expand-file-name invocation-name invocation-directory)))
+    (dolist (scenario '(success failure timeout oversized invalid))
+      (let ((pilish-terminal-image-conversion-timeout
+             (if (eq scenario 'timeout) 0.05 5))
+            source)
+        (cl-letf (((symbol-function 'pilish-terminal-image--conversion-command)
+                   (lambda (_type path)
+                     (setq source path)
+                     (list emacs "--batch" "-Q" "--eval"
+                           (pcase scenario
+                             ('success (format "(let ((coding-system-for-write 'no-conversion)) (write-region (base64-decode-string %S) nil \"/dev/stdout\" nil 'silent))"
+                                               pilish-test--png-base64))
+                             ('failure "(kill-emacs 1)")
+                             ('timeout "(sleep-for 10)")
+                             ('oversized "(princ (make-string 10000 65))")
+                             ('invalid "(princ \"not a PNG\")"))))))
+          (let ((result (pilish-terminal-image--convert-to-png "source bytes" 'jpeg 1000)))
+            (if (eq scenario 'success)
+                (should (equal result (base64-decode-string pilish-test--png-base64)))
+              (should-not result))
+            (should source)
+            (should-not (file-exists-p source))))))))
+
+(ert-deftest pilish-test-terminal-image-real-ffmpeg-formats ()
+  "Installed FFmpeg converts all three formats to bounded PNG payloads."
+  (skip-unless (executable-find "ffmpeg"))
+  (dolist (fixture `((jpeg ,pilish-test--jpeg-base64)
+                     (webp ,pilish-test--webp-base64)
+                     (gif ,pilish-test--gif-base64)))
+    (let ((png (pilish-terminal-image--convert-to-png
+                (base64-decode-string (cadr fixture)) (car fixture) 100000)))
+      (should png)
+      (should (eq (image-type-from-data png) 'png))
+      (should (<= (length png) 100000)))))
+
+(ert-deftest pilish-test-terminal-image-real-ffmpeg-first-gif-frame ()
+  "A two-frame GIF produces exactly the same PNG as its first frame alone."
+  (skip-unless (executable-find "ffmpeg"))
+  (let* ((animated (base64-decode-string
+                    "R0lGODlhAQABAIAAAP8AAAAAACH5BAAAAAAALAAAAAABAAEAAAICRAEAIfkEAAAAAAAsAAAAAAEAAQCAAAD/AAAAAgJEAQA7"))
+         (single (pilish-terminal-image--convert-to-png
+                  (base64-decode-string pilish-test--gif-base64) 'gif 100000))
+         (result (pilish-terminal-image--convert-to-png animated 'gif 100000)))
+    (should single)
+    (should (equal single result))))
+
+(ert-deftest pilish-test-terminal-image-transmission-is-chunked-and-owned ()
+  "Large payloads are chunked and deletion targets only the owned image ID."
+  (let* ((preview (pilish-terminal-image--make-preview
+                   :data (make-string 10000 ?A) :columns 30 :rows 6))
+         (view (list (selected-frame) (selected-window) 1 preview '(4 2 30 6)))
+         output)
+    (cl-letf (((symbol-function 'pilish-terminal-image--send)
+               (lambda (_frame string) (push string output))))
+      (let ((placement (pilish-terminal-image--draw view)))
+        (should (= 4 (length output)))
+        (dolist (string (cdr output))
+          (should (string-match "q=2.*;\\(.*\\)\e\\\\" string))
+          (should (<= (length (match-string 1 string)) 4096)))
+        (pilish-terminal-image--delete placement)
+        (should (string-match-p
+                 (format "a=d,d=I,i=%d,q=2" (plist-get placement :id))
+                 (car output)))
+        (should-not (string-match-p "d=A" (car output)))))))
+
+(ert-deftest pilish-test-terminal-image-reconcile-all-visible-and-clean-hidden ()
+  "Both visible previews are placed, unchanged views are reused, hidden ones deleted."
+  (let* ((pilish-terminal-image-mode t)
+         (pilish-terminal-image--placements nil)
+         (first (list 'frame 'window 1 'png '(0 0 30 6)))
+         (second (list 'frame 'window 100 'png '(8 0 30 6)))
+         (views (list first second))
+         (created 0) deleted)
+    (cl-letf (((symbol-function 'pilish-terminal-image--views) (lambda () views))
+              ((symbol-function 'pilish-terminal-image--draw)
+               (lambda (view) (list :view view :id (cl-incf created))))
+              ((symbol-function 'pilish-terminal-image--delete)
+               (lambda (placement) (push placement deleted))))
+      (pilish-terminal-image--refresh)
+      (should (= created 2))
+      (pilish-terminal-image--refresh)
+      (should (= created 2))
+      (setq views (list second))
+      (pilish-terminal-image--prune)
+      (should (= (length deleted) 1))
+      (should (equal first (plist-get (car deleted) :view)))
+      (setq views nil)
+      (pilish-terminal-image--prune)
+      (should (= (length deleted) 2))
+      (should-not pilish-terminal-image--placements))))
+
+(ert-deftest pilish-test-terminal-image-mode-disable-releases-display-resources ()
+  "Disabling opt-in cancels polling, unregisters hooks, and deletes owned images."
+  (let ((pilish-terminal-image-mode nil)
+        (pilish-terminal-image--timer nil)
+        (pilish-terminal-image--placements nil)
+        (pre-command-hook nil)
+        (window-buffer-change-functions nil)
+        (window-size-change-functions nil)
+        (window-scroll-functions nil)
+        (delete-frame-functions nil)
+        (kill-emacs-hook nil)
+        (post-command-hook nil)
+        deleted)
+    (cl-letf (((symbol-function 'pilish-terminal-image--delete)
+               (lambda (p) (push p deleted))))
+      (unwind-protect
+          (progn
+            (pilish-terminal-image-mode 1)
+            (should (timerp pilish-terminal-image--timer))
+            (should (memq #'pilish-terminal-image--prune post-command-hook))
+            (setq pilish-terminal-image--placements '((:id 123)))
+            (pilish-terminal-image-mode -1)
+            (should-not pilish-terminal-image--timer)
+            (should-not pilish-terminal-image--placements)
+            (should (equal deleted '((:id 123))))
+            (should-not (memq #'pilish-terminal-image--prune post-command-hook)))
+        (pilish-terminal-image-mode -1)))))
+
+(ert-deftest pilish-test-terminal-image-unrelated-commands-do-not-redraw ()
+  "Commands and layout notifications outside a preview must not delete it."
+  (let ((pilish-terminal-image-mode nil)
+        (pilish-terminal-image--timer nil)
+        (pilish-terminal-image--placements nil)
+        (pre-command-hook nil)
+        (post-command-hook nil)
+        (window-buffer-change-functions nil)
+        (window-size-change-functions nil)
+        (window-scroll-functions nil)
+        (delete-frame-functions nil)
+        (kill-emacs-hook nil)
+        (view (list 'frame 'window 1 'png '(0 0 30 6)))
+        (created 0) (deleted 0))
+    (cl-letf (((symbol-function 'pilish-terminal-image--views) (lambda () (list view)))
+              ((symbol-function 'pilish-terminal-image--draw)
+               (lambda (v) (cl-incf created) (list :view v :id 1)))
+              ((symbol-function 'pilish-terminal-image--delete)
+               (lambda (_) (cl-incf deleted))))
+      (unwind-protect
+          (progn
+            (pilish-terminal-image-mode 1)
+            (pilish-terminal-image--refresh)
+            (with-temp-buffer
+              (run-hooks 'pre-command-hook)
+              (insert "An unrelated edit")
+              (run-hooks 'post-command-hook)
+              (run-hook-with-args 'window-buffer-change-functions (selected-window)))
+            (pilish-terminal-image--refresh)
+            (should (= deleted 0))
+            (should (= created 1)))
+        (pilish-terminal-image-mode -1)))))
+
+(ert-deftest pilish-test-terminal-image-transcript-edit-keeps-unchanged-view ()
+  "Appending transcript text below a visible preview must not flash the image."
+  (let* ((pilish-terminal-image-mode t)
+         (view (list 'frame 'window 1 'png '(0 0 30 6)))
+         (placement (list :view view :id 1))
+         (pilish-terminal-image--placements (list placement))
+         (deleted 0))
+    (cl-letf (((symbol-function 'pilish-terminal-image--views) (lambda () (list view)))
+              ((symbol-function 'pilish-terminal-image--delete)
+               (lambda (_) (cl-incf deleted))))
+      (pilish-terminal-image--changed 100 110 0)
+      (should (= deleted 0))
+      (should (equal (list placement) pilish-terminal-image--placements)))))
+
+(ert-deftest pilish-test-terminal-image-interrupted-upload-cleans-owned-id ()
+  "A failed transmission cannot leave an untracked terminal image."
+  (let* ((preview (pilish-terminal-image--make-preview
+                   :data (make-string 5000 ?A) :columns 10 :rows 2))
+         (view (list (selected-frame) (selected-window) 1 preview '(0 0 10 2)))
+         (sent 0) deleted)
+    (cl-letf (((symbol-function 'pilish-terminal-image--send)
+               (lambda (&rest _) (when (= (cl-incf sent) 2) (error "Disconnected"))))
+              ((symbol-function 'pilish-terminal-image--delete)
+               (lambda (p) (setq deleted p))))
+      (should-error (pilish-terminal-image--draw view))
+      (should (integerp (plist-get deleted :id)))
+      (should (equal view (plist-get deleted :view))))))
+
+(ert-deftest pilish-test-terminal-image-geometry-requires-whole-region ()
+  "A partial, folded, too-wide or horizontally scrolled region never qualifies."
+  (save-window-excursion
+    (with-temp-buffer
+      (switch-to-buffer (current-buffer))
+      (insert "                    \n                    \n                    \n")
+      (let ((preview (pilish-terminal-image--make-preview :columns 10 :rows 2))
+            (window (selected-window)))
+        (set-window-start window 1)
+        (cl-letf (((symbol-function 'pos-visible-in-window-p)
+                   (lambda (position &rest _)
+                     (save-excursion
+                       (goto-char position)
+                       (list (+ 6 (current-column))
+                             (1- (line-number-at-pos)))))))
+          (should (= (+ 6 (car (window-inside-edges window)))
+                     (nth 1 (pilish-terminal-image--geometry window 1 preview))))
+          (put-text-property 1 2 'invisible t)
+          (should-not (pilish-terminal-image--geometry window 1 preview))
+          (remove-text-properties 1 2 '(invisible nil))
+          (cl-letf (((symbol-function 'window-body-width) (lambda (&rest _) 5)))
+            (should-not (pilish-terminal-image--geometry window 1 preview)))
+          (cl-letf (((symbol-function 'window-hscroll) (lambda (_) 1)))
+            (should-not (pilish-terminal-image--geometry window 1 preview))))))))
+
+(ert-deftest pilish-test-terminal-image-prompt-live-history-and-tool-cooling ()
+  "Every format preserves terminal anchors across live, history and cold tools."
+  (let ((pilish-terminal-image-mode t))
+    (cl-letf (((symbol-function 'display-images-p) (lambda (&rest _) nil))
+              ((symbol-function 'pilish-terminal-image--frame-p) (lambda (_) t))
+              ((symbol-function 'pilish-terminal-image--convert-to-png)
+               (lambda (&rest _) (base64-decode-string pilish-test--png-base64))))
+      (dolist (fixture `(("image/png" ,pilish-test--png-base64)
+                         ("image/jpeg" ,pilish-test--jpeg-base64)
+                         ("image/webp" ,pilish-test--webp-base64)
+                         ("image/gif" ,pilish-test--gif-base64)))
+        (dolist (route '(live history tool))
+          (with-temp-buffer
+            (pilish-chat-mode)
+            (let* ((image (list :type "image" :mimeType (car fixture) :data (cadr fixture)))
+                   (message `(:role "user" :timestamp 1704067200000
+                              :content [(:type "text" :text "Image") ,image])))
+              (pcase route
+                ('live (pilish--handle-display-event
+                        (list :type "message_start" :message message)))
+                ('history (pilish--display-history-messages (vector message)))
+                ('tool
+                 (let ((block (pilish--display-tool-start "custom_image" nil "image")))
+                   (pilish--display-tool-end "custom_image" nil
+                                             (vector image) nil nil block)
+                   (pilish--cool-tool-overlay (pilish--tool-block-overlay block)))))
+              (should (pilish-test--terminal-image-anchor (buffer-string))))))))))
+
 (ert-deftest pilish-test-tool-result-image-has-terminal-placeholder ()
   "An image result is useful text inside its tool block in a terminal."
   (with-temp-buffer

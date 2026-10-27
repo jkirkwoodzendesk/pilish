@@ -1088,7 +1088,7 @@ extraction, automatic detection of paths typed into the prompt, and
 multiple attachments are deferred.
 
 *Inline display:* image content in sent user turns and completed tool
-results renders inline in graphical Emacs and as a type-and-size
+results renders inline in graphical Emacs and, by default, as a type-and-size
 placeholder in terminals; sent and returned images share the same
 bounded renderer.  Pi's built-in =read= already returns raster images
 as image content, resized to at most 2000x2000.  For SVG, a returned
@@ -1102,6 +1102,53 @@ decoder cost is not bounded by the source-byte cap; the preview
 settings in Configuration bound what renders.  Moving a
 terminal-rendered chat to a GUI, resizing previews, or applying a
 later extension replacement may require a toggle or history reload.
+
+*Opt-in terminal image previews:* in a known Kitty-graphics-compatible
+terminal, such as Ghostty, enable =M-x pilish-terminal-image-mode=.
+For startup configuration:
+
+#+begin_src emacs-lisp
+(after! pilish
+  (pilish-terminal-image-mode 1)) ; Doom; only with compatible terminal clients
+#+end_src
+
+Outside Doom, call =(pilish-terminal-image-mode 1)= after loading Pilish.
+The mode is global and disabled by default. Enabling it asserts that your
+terminal clients support Kitty graphics; it does not probe support, and
+SSH, tmux, and nested terminals are not automatically handled. Graphical
+Emacs keeps its native renderer. PNG previews need no conversion. JPEG,
+WebP, and the first frame of GIF images are converted to PNG with optional
+FFmpeg support. Unsupported formats, including SVG, keep their placeholders.
+The same rules apply to prompt images, completed tool results, and replayed
+history.
+
+Install =ffmpeg= on Emacs's =exec-path= to enable conversion, or set
+=pilish-terminal-image-converter-program= to its executable path. Set it to
+=nil= to disable conversion without affecting PNG previews. Missing support,
+failed conversion, timeout, and oversized output leave the original placeholder.
+Conversion uses a private temporary copy of the validated image bytes, not the
+original attachment or tool path; the copy is removed afterward. Each conversion
+waits synchronously for up to =pilish-terminal-image-conversion-timeout= seconds
+(default 2), with no shell invocation. FFmpeg is instructed to limit decoding to
+16 megapixels and scale the result to at most 1024 by 1024 pixels. The existing
+preview-byte cap also applies to converted PNG output.
+
+Previews reserve text cells. Every preview whose complete region fits in
+its window is displayed; partially visible previews are hidden rather than
+clipped. Workspace switches, scrolling, resizing, folding, and closing
+windows remove or reposition placements. Disable the mode with
+=M-x pilish-terminal-image-mode= to remove all owned terminal images.
+Existing placeholders need a tool-block toggle or history reload after
+enabling; reserved blank rows can remain after disabling until re-rendered.
+
+=pilish-terminal-image-max-columns= (60) and
+=pilish-terminal-image-max-rows= (16) bound each preview. The approximate
+cell width/height ratio is =pilish-terminal-image-cell-aspect-ratio= (0.5);
+no pixel-size query is made. Layout is fixed when the preview is rendered,
+so a narrow resized window may hide a preview until it is widened again.
+Terminal placements are experimental. Unchanged visible previews are retained
+across commands and unrelated edits. Moving or newly visible previews are
+placed on a timer, so layout changes may briefly hide them.
 
 ** Sessions, transcripts, and exports
 

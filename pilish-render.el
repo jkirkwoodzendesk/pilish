@@ -43,6 +43,7 @@
 
 (require 'pilish-ui)
 (require 'pilish-table)
+(require 'pilish-terminal-image)
 (require 'cl-lib)
 (require 'ansi-color)
 (require 'image)
@@ -1893,6 +1894,7 @@ live-tool state, cached execution args, pending coalesced tool updates, and
 the compatibility pending overlay slot so buffer and render state stay
 consistent.  Pending deferred cooling is invalidated first.  Tree-sitter
 overlays are left alone."
+  (pilish-terminal-image--invalidate)
   (pilish--cancel-tool-update-flush)
   (pilish--cancel-stream-delta-flush)
   (pilish--release-nested-tool-state)
@@ -4235,8 +4237,16 @@ path/error metadata for `pilish-visit-file'."
                (pilish--image-preview-label
                 mime-type (format "%s, invalid data" size))))
              ((not (pilish--image-display-capable-p))
-              (pilish--image-preview-string
-               (pilish--image-preview-label mime-type size)))
+              (let* ((window (pilish--image-preview-window))
+                     (label (pilish--image-preview-label mime-type size))
+                     (terminal-preview
+                      (and (memq type '(png jpeg gif webp))
+                           (pilish-terminal-image--frame-p (window-frame window))
+                           (pilish-terminal-image--preview-string
+                            (if (eq type 'png) raw
+                              (pilish-terminal-image--convert-to-png raw type limit))
+                            label window))))
+                (pilish--image-preview-string (or terminal-preview label))))
              ((not (image-type-available-p type))
               (pilish--image-preview-string
                (pilish--image-preview-label
@@ -6515,7 +6525,8 @@ Return :cold-body and transient absolute :deleted-spans for view mapping."
          (cold (substring-no-properties body))
          language-spans)
     (dolist (property '(pilish-tool-section pilish-nested-summary pilish-nested-root-id
-                       pilish-nested-call-id pilish-image-preview pilish-tool-diagnostic-guard
+                       pilish-nested-call-id pilish-image-preview pilish-terminal-image
+                       pilish-tool-diagnostic-guard
                        pilish-no-fontify pilish-subagent-name pilish-tool-fold-heading
                        pilish-argument-guard pilish-argument-value pilish-argument-literal
                        line-prefix wrap-prefix))

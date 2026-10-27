@@ -44,6 +44,7 @@ Keep implementation ownership out of the map. The feature file names user paths,
 
 - [Compose and send](./compose-and-send.md) covers session layout and consecutive prompt submission.
 - [Read streamed output](./read-output.md) covers streaming, thinking display, scrolling, and table resizing.
+- [Terminal image previews](./terminal-images.md) covers opt-in terminal graphics, PNG/JPEG/WebP/GIF formats, bounded conversion, source routes, viewport visibility, and cleanup; pixel evidence requires a separate manual terminal run.
 - [Work with tool blocks](./tool-blocks.md) covers tool output, native folds, child arguments, cursor stability, and cooling.
 - [Browse and resume sessions](./sessions.md) covers session and tree browser actions plus browser-based resume.
 - [Open saved conversations](./saved-conversations.md) covers independent observers, refresh, failure retention, and observer-only quit.
