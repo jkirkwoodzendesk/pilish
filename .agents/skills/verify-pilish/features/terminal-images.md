@@ -18,6 +18,23 @@ An explicitly enabled terminal client displays PNG previews directly, and JPEG, 
 
 Use an isolated terminal Emacs with a Kitty-compatible outer terminal such as Ghostty. Open a disposable Pilish session and enable `M-x pilish-terminal-image-mode`. Read a PNG with Pi's read tool or attach a PNG to a prompt. Open the same saved session to exercise history. Disable the mode to clear placements.
 
+For plain Emacs verification, use a separate `emacs -Q` server with a minimal
+init that initializes the installed dependencies, adds the checkout to
+`load-path`, and uses the README's `with-eval-after-load` configuration before
+requiring Pilish. Do not load Doom or the user's ordinary init file. For example:
+
+```bash
+emacs -Q --daemon=pilish-image-test --load /path/to/minimal-init.el
+emacsclient -s pilish-image-test -t
+```
+
+Record `user-init-file`, `package-user-dir`, resolved Pilish/backend libraries,
+`(featurep 'doom)` and `(fboundp 'after!)` in that server. Run the manual lane
+below through its terminal client; a daemon without a terminal frame cannot
+prove displayed images. Keep the server alive until the visual check finishes,
+then stop only this test server with
+`emacsclient -s pilish-image-test --eval '(kill-emacs)'`.
+
 ## Driving it with Pilish harnesses
 
 Preconditions: provision dependencies and run the Doctor described in the verification skill before GUI journeys. The terminal pixel check below is a separate manual lane, not evidence supplied by a graphical Emacs run. Use a disposable session, not the user's saved session or an unattended driver attached to their interactive Emacs.

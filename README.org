@@ -1105,14 +1105,26 @@ later extension replacement may require a toggle or history reload.
 
 *Opt-in terminal image previews:* in a known Kitty-graphics-compatible
 terminal, such as Ghostty, enable =M-x pilish-terminal-image-mode=.
-For startup configuration:
+For plain Emacs, add this to your =init.el= after installing Pilish:
+
+#+begin_src emacs-lisp
+(with-eval-after-load 'pilish
+  (pilish-terminal-image-mode 1))
+#+end_src
+
+Alternatively, call =(pilish-terminal-image-mode 1)= after loading Pilish
+with =(require 'pilish)=. For a daemon, put the configuration in the
+server's init file and connect a terminal client with =emacsclient -t=.
+The mode applies to compatible terminal clients, not just the daemon's
+initial frame.
+
+For Doom Emacs, the equivalent configuration in =config.el= is:
 
 #+begin_src emacs-lisp
 (after! pilish
-  (pilish-terminal-image-mode 1)) ; Doom; only with compatible terminal clients
+  (pilish-terminal-image-mode 1))
 #+end_src
 
-Outside Doom, call =(pilish-terminal-image-mode 1)= after loading Pilish.
 The mode is global and disabled by default. Enabling it asserts that your
 terminal clients support Kitty graphics; it does not probe support, and
 SSH, tmux, and nested terminals are not automatically handled. Graphical
